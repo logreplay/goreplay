@@ -1,3 +1,4 @@
+// Package plugins 各种插件实现
 package plugins
 
 import (
@@ -12,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"goreplay/analyze"
 	"goreplay/byteutils"
 	"goreplay/capture"
 	"goreplay/config"
@@ -22,7 +24,10 @@ import (
 	"goreplay/tcp"
 )
 
-const hostSplit = ","
+const (
+	hostSplit      = ","
+	filterTemplate = "(tcp dst port %s and dst host %s) or (tcp src port %s and src host %s)"
+)
 
 // RAWInput used for intercepting traffic for given address
 type RAWInput struct {
@@ -63,18 +68,19 @@ func NewRAWInput(address string, config config.RAWInputConfig) (i *RAWInput) {
 		i.checkSelectHost(config.SelectHost)
 	}
 
+	var aspectTarget []tcp.ListenTarget
+
 	if config.Logreplay {
+		bpf := ""
 		i.checkAndSelectIP()
+		logger.Info(fmt.Sprintf("listening %s:%d, aspect: %s", i.Host, i.Port, i.AspectInfo))
+		bpf = fmt.Sprintf(filterTemplate, strconv.Itoa(port), i.Host, strconv.Itoa(port), i.Host)
+		if i.AspectInfo != "" {
+			aspectTarget, bpf = i.parseAspect(filterTemplate, bpf)
+		}
 
-		logger.Info(fmt.Sprintf("listening %s:%d", i.Host, i.Port))
-
-		// 请求报文  来源端口跟15取模后 符合采样条件
-		sampleSrcPort := fmt.Sprintf(" and (( tcp[0:2] & 0x0f) < %d)", config.LogreplaySampleRate)
-		// 响应报文  目标端口跟15取模后, 符合采样条件
-		sampleDstPort := fmt.Sprintf(" and (( tcp[2:2] & 0x0f) < %d)", config.LogreplaySampleRate)
-
-		i.BPFFilter = fmt.Sprintf("(tcp dst port %d and dst host %s %s) or (tcp src port %d and src host %s %s)",
-			port, i.Host, sampleSrcPort, port, i.Host, sampleDstPort)
+		logger.Info(" bpfFilter is ", bpf)
+		i.BPFFilter = bpf
 
 		// 设置默认的BufferTimeout, 避免cpu空转
 		if i.BufferTimeout == 0 {
@@ -82,9 +88,33 @@ func NewRAWInput(address string, config config.RAWInputConfig) (i *RAWInput) {
 		}
 	}
 
-	i.listen(address)
+	i.listen(address, aspectTarget)
 
 	return
+}
+
+func (i *RAWInput) parseAspect(filterTemplate string, bpf string) ([]tcp.ListenTarget, string) {
+	var aspectTarget []tcp.ListenTarget
+	// i.AspectInfo 要求是 ip:port:protocol,ip:port:protocol 的形式
+	aspectArr := strings.Split(i.AspectInfo, ",")
+	for _, aspect := range aspectArr {
+		node := strings.Split(aspect, ":")
+		// 要求是 ip:port:protocol 的形式
+		if len(node) != 3 {
+			logger.Error(aspect, "不是 ip:port:protocol 的形式")
+			continue
+		}
+		h := node[0]
+		p := node[1]
+		aspectTarget = append(aspectTarget, tcp.ListenTarget{
+			Address:  fmt.Sprintf("%s:%s", h, p),
+			Protocol: node[2],
+		})
+		aspectFilter := fmt.Sprintf(filterTemplate, p, h, p, h)
+		logger.Info(fmt.Sprintf("listening aspect %s:%s", h, p))
+		bpf += " or " + aspectFilter
+	}
+	return aspectTarget, bpf
 }
 
 // checkSelectHost 检测输入的host是否合法，并且保存到selectHostMap中
@@ -185,7 +215,6 @@ func autoGetIP() ([]string, error) {
 	return ips, nil
 }
 
-// PluginRead reads meassage from this plugin
 // PluginRead reads message from this plugin
 func (i *RAWInput) PluginRead() (*Message, error) {
 	var msgTCP *tcp.Message
@@ -195,13 +224,15 @@ func (i *RAWInput) PluginRead() (*Message, error) {
 		return nil, errors.ErrorStopped
 	case msgTCP = <-i.message:
 		msg.Data = msgTCP.Data()
+		msg.Protocol = msgTCP.Pool().GetProtocol()
 		defer func() {
 			msgTCP.Reset()
 			msgTCP = nil
 		}()
 	}
-	if msgTCP.LostData > 0 {
-		logger.Debug("tcp包有被截断, 考虑使用--input-raw-override-snaplen :   ", msgTCP.Length, msgTCP.LostData)
+
+	if err := i.validateTCPMsg(msgTCP); err != nil {
+		return nil, err
 	}
 
 	var msgType byte = protocol.ResponsePayload
@@ -226,6 +257,16 @@ func (i *RAWInput) PluginRead() (*Message, error) {
 		}
 	}
 
+	if msgType == protocol.RequestPayload {
+		if !i.checkMessageType(msgType) {
+			return nil, errors.ErrorFilterMsgType
+		}
+
+		if len(msgTCP.Data()) > 0 && !i.checkCmd(msgTCP.Data()) {
+			return nil, errors.ErrorFilterCmd
+		}
+	}
+
 	// 响应包的时候，记录来源请求地址(即回包的目的地址)
 	if msgType == protocol.ResponsePayload {
 		host, _, err := net.SplitHostPort(msgTCP.DstAddr)
@@ -241,14 +282,6 @@ func (i *RAWInput) PluginRead() (*Message, error) {
 
 	logger.Debug3(fmt.Sprintf("[INPUT-RAW] msg meta: %s", byteutils.SliceToString(msg.Meta)))
 
-	// to be removed....
-	if msgTCP.Truncated {
-		logger.Debug2("[INPUT-RAW] message truncated, increase copy-buffer-size")
-	}
-	// to be removed...
-	if msgTCP.TimedOut && len(msgTCP.Data()) > 0 {
-		logger.Debug2("[INPUT-RAW] message timeout reached, increase input-raw-expire")
-	}
 	if i.Stats {
 		stat := msgTCP.Stats
 		go i.addStats(stat)
@@ -257,7 +290,66 @@ func (i *RAWInput) PluginRead() (*Message, error) {
 	return &msg, nil
 }
 
-func (i *RAWInput) listen(address string) {
+func (i *RAWInput) validateTCPMsg(msg *tcp.Message) error {
+	if msg.LostData > 0 {
+		logger.Debug("tcp包有被截断, 考虑使用--input-raw-override-snaplen :   ", msg.Length, msg.LostData)
+	}
+	// to be removed....
+	if msg.Truncated {
+		logger.Debug2("[INPUT-RAW] message truncated, increase copy-buffer-size")
+	}
+	// to be removed...
+	if msg.TimedOut && len(msg.Data()) > 0 {
+		logger.Debug2("[INPUT-RAW] message timeout reached, increase input-raw-expire")
+	}
+
+	if msg.Invalid() {
+		return errors.ErrorFilterCmd
+	}
+	return nil
+}
+
+// checkMessageType 判断录制类型
+func (i *RAWInput) checkMessageType(msgType byte) bool {
+	if i.RecordMsgType == "" {
+		return true
+	}
+	if i.RecordMsgType == "req" && msgType == protocol.RequestPayload {
+		return true
+	}
+	if i.RecordMsgType == "rsp" && msgType == protocol.ResponsePayload {
+		return true
+	}
+	return false
+}
+
+// checkCmd 校验cmd
+func (i *RAWInput) checkCmd(data []byte) bool {
+	if i.RecordMsgCmd == "" {
+		return true
+	}
+	cmdGetter := analyze.Init(i.Protocol)
+	if cmdGetter == nil {
+		// 当前协议未配置cmd解析器，则不过滤
+		logger.Debug3(fmt.Sprintf("protocol: %s has no cmd analyze", i.Protocol))
+		return true
+	}
+	serviceCmd, err := cmdGetter.GetServiceCmd(data)
+	logger.Debug3(fmt.Sprintf("checkCmd: current cmd is %s", serviceCmd))
+	if err != nil {
+		logger.Error("input-raw: error while GetServiceCmd: %s", err)
+		return false
+	}
+	targetCmds := strings.Split(i.RecordMsgCmd, ",")
+	for _, targetCmd := range targetCmds {
+		if serviceCmd == targetCmd {
+			return true
+		}
+	}
+	return false
+}
+
+func (i *RAWInput) listen(address string, aspectTarget []tcp.ListenTarget) {
 	var err error
 	i.listener, err = capture.NewListener(i.Host, i.Port, "", i.Engine, i.TrackResponse)
 	if err != nil {
@@ -268,17 +360,21 @@ func (i *RAWInput) listen(address string) {
 	if err != nil {
 		log.Fatal(err)
 	}
-	pool := tcp.NewMessagePool(i.CopyBufferSize, i.Expire, i.handler)
-	pool.MatchUUID(i.TrackResponse)
-
-	// listen address: ip+port
-	pool.Address(address)
-	// set business protocol
-	pool.Protocol(i.Protocol)
+	msgHandler := tcp.NewMessageHandler(tcp.MessagePoolParam{
+		MaxSize:       i.CopyBufferSize,
+		MessageExpire: i.Expire,
+		Handler:       i.handler,
+		TrackResponse: i.TrackResponse,
+		InTarget: tcp.ListenTarget{
+			Address:  address,
+			Protocol: i.Protocol,
+		},
+		OutTarget: aspectTarget,
+	})
 
 	var ctx context.Context
 	ctx, i.cancelListener = context.WithCancel(context.Background())
-	errCh := i.listener.ListenBackground(ctx, pool.Handler)
+	errCh := i.listener.ListenBackground(ctx, msgHandler.Handler)
 	select {
 	case err := <-errCh:
 		log.Fatal(err)

@@ -8,7 +8,6 @@ import (
 	"net"
 	"os"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -20,7 +19,7 @@ import (
 	"goreplay/logger"
 	"goreplay/logreplay"
 	"goreplay/protocol"
-	"goreplay/remote"
+	"goreplay/utils/gateway"
 
 	"github.com/coocood/freecache"
 	jsoniter "github.com/json-iterator/go"
@@ -30,9 +29,11 @@ import (
 const (
 	freeCacheExpired = 60
 	reportType       = "goReplay"
+	replayType       = "replay"
 	cacheSizeMin     = 100
 	recordLimit      = 10000
 	defaultQPSLimit  = 10
+	trueStr          = "true"
 
 	goreplay              = "goreplay"
 	localhost             = "127.0.0.1"
@@ -45,10 +46,6 @@ const (
 type SendError int
 
 const (
-	sendSucc SendError = iota
-	dialError
-	writeError
-	readError
 	emptySettingFrame = "000000040000000000"
 )
 
@@ -64,13 +61,17 @@ type LogReplayOutput struct {
 	responses                              chan *response
 	stop                                   chan bool // Channel used only to indicate goroutine should shutdown
 	target                                 string
-	recordNum                              uint32 // 已上报的总数
 	curQPS                                 uint32
 	taskID                                 uint32
 	success, dialFail, writeFail, readFail uint32
 	reportBuf                              chan logreplay.ReportItem
 	lastSampleTime                         int64
 	json                                   jsoniter.API
+	replayBuf                              chan replayParam
+	targetList                             []string // 边录制边回放目标地址
+	counter                                *logreplay.Counter
+	RequestReWriteList                     []string
+	AllowRequest                           string
 }
 
 // NewLogReplayOutput constructor for LogReplayOutput
@@ -87,7 +88,7 @@ func NewLogReplayOutput(address string, conf *config.LogReplayOutputConfig) Plug
 	checkLogReplayConfig(conf)
 
 	o.target = conf.Target
-
+	o.counter = logreplay.NewCounter()
 	o.conf = conf
 	if o.conf.TrackResponses {
 		o.responses = make(chan *response, o.conf.Workers)
@@ -99,6 +100,8 @@ func NewLogReplayOutput(address string, conf *config.LogReplayOutputConfig) Plug
 	}
 
 	if conf.Target != "" {
+		o.targetList = strings.Split(o.conf.Target, ",")
+
 		tcpClient := client.NewTCPClient(conf.Target, &client.TCPClientConfig{
 			Debug:   true,
 			Timeout: o.conf.TargetTimeout,
@@ -107,6 +110,7 @@ func NewLogReplayOutput(address string, conf *config.LogReplayOutputConfig) Plug
 	}
 
 	o.reportBuf = make(chan logreplay.ReportItem)
+	o.replayBuf = make(chan replayParam)
 	o.stop = make(chan bool)
 	o.cache = freecache.NewCache(conf.CacheSize * 1024 * 1024)
 
@@ -119,6 +123,12 @@ func NewLogReplayOutput(address string, conf *config.LogReplayOutputConfig) Plug
 	for i := 0; i < 5; i++ {
 		go o.startReporter()
 	}
+
+	// 开启回放worker
+	go o.startRelay()
+
+	// 上报数据
+	o.doReport()
 
 	return o
 }
@@ -139,19 +149,8 @@ func checkLogReplayConfig(conf *config.LogReplayOutputConfig) {
 		return
 	}
 
-	// 先必传 protocol
-	if conf.Protocol == "" {
-		logger.Fatal("using logreplay require protocol: --output-logreplay-protocol")
-		return
-	}
-
 	if conf.CommitID == "" {
 		logger.Fatal("using logreplay require commitID(or version of protocol): --output-logreplay-commitid")
-		return
-	}
-
-	if conf.GatewayAddr == "" {
-		logger.Fatal("using logreplay require gateway host: --output-logreplay-gateway")
 		return
 	}
 	checkLogreplayOptionalConfig(conf)
@@ -159,7 +158,9 @@ func checkLogReplayConfig(conf *config.LogReplayOutputConfig) {
 
 func checkLogreplayOptionalConfig(conf *config.LogReplayOutputConfig) {
 	if conf.Target != "" {
-		checkAddress(conf.Target)
+		for _, v := range strings.Split(conf.Target, ",") {
+			checkAddress(v)
+		}
 	}
 
 	if conf.Env == "" {
@@ -197,48 +198,12 @@ func checkLogreplayOptionalConfig(conf *config.LogReplayOutputConfig) {
 	}
 }
 
-func (o *LogReplayOutput) checkModuleAuth(conf *config.LogReplayOutputConfig) {
-	rsp := &logreplay.AuthRsp{}
-
-	err := o.send(logreplay.GetCasKeyURL, &logreplay.AuthReq{ModuleID: conf.ModuleID}, rsp)
-	if err != nil {
-		logger.Fatal("[LOGREPLAY-OUTPUT] checkModuleAuth error, get auth failed: ", err)
-		return
-	}
-
-	if rsp.ID != conf.APPID || rsp.KEY != conf.APPKey {
-		logger.Fatal("[LOGREPLAY-OUTPUT] checkModuleAuth failed, appid and appkey not match")
-		return
-	}
-}
-
-func (o *LogReplayOutput) checkAndSetDefaultServiceName(conf *config.LogReplayOutputConfig) {
-	if conf.ProtocolServiceName != "" {
-		return
-	}
-
-	rsp := newLogreplayResponse()
-	err := o.send(logreplay.GetGetModuleURL, &logreplay.GetModuleReq{ModuleID: conf.ModuleID}, rsp)
-	if err != nil {
-		logger.Fatal("[LOGREPLAY-OUTPUT] getGetModule error: ", err)
-		return
-	}
-
-	if rsp.Module.AppNameEn == "" || rsp.Module.ModuleNameEn == "" {
-		logger.Fatal("[LOGREPLAY-OUTPUT] getGetModule empty AppNameEn or ModuleNameEn")
-		return
-	}
-
-	conf.ProtocolServiceName = fmt.Sprintf("%s.%s", rsp.Module.AppNameEn, rsp.Module.ModuleNameEn)
-	logger.Info("[LOGREPLAY-OUTPUT] output-logreplay-protocol-service-name default value : ",
-		conf.ProtocolServiceName)
-}
-
-func newLogreplayResponse() *logreplay.GetModuleRsp {
-	return &logreplay.GetModuleRsp{}
-}
-
 func (o *LogReplayOutput) createTask() (uint32, error) {
+	addMap := map[string][]string{
+		"default_target": o.targetList,
+	}
+
+	data, _ := json.Marshal(addMap)
 	req := &logreplay.GoReplayReq{
 		ModuleID:       o.conf.ModuleID,
 		Operator:       goreplay,
@@ -246,11 +211,17 @@ func (o *LogReplayOutput) createTask() (uint32, error) {
 		Rate:           100,
 		RecordCommitID: goreplay,
 		TargetModuleID: o.conf.ModuleID,
-		Addrs:          o.conf.Target,
+		Addrs:          string(data),
 	}
+
+	// 表示双环境回放
+	if len(o.targetList) == 2 {
+		req.ReplayEnvTag = true
+	}
+
 	rsp := &logreplay.TaskRsp{}
 
-	err := o.send(logreplay.GoReplayTaskURL, req, rsp)
+	err := gateway.Send(config.GWCfg().GoReplayTaskURL, req, rsp)
 	if err != nil {
 		logger.Fatal("[LOGREPLAY-OUTPUT] createTask error, get taskID failed: ", err)
 		return 0, err
@@ -261,7 +232,7 @@ func (o *LogReplayOutput) createTask() (uint32, error) {
 
 func (o *LogReplayOutput) startWorker(bufferIndex int) {
 	for {
-		if atomic.LoadUint32(&o.recordNum) > uint32(o.conf.RecordLimit) {
+		if o.counter.RecordNum() > uint32(o.conf.RecordLimit) {
 			logger.Fatal("[LOGREPLAY-OUTPUT] already access record max limit: ", o.conf.RecordLimit)
 			return
 		}
@@ -276,29 +247,7 @@ func (o *LogReplayOutput) startWorker(bufferIndex int) {
 }
 
 func (o *LogReplayOutput) startReporter() {
-	rp := &Reporter{
-		items: []logreplay.ReportItem{},
-		timer: time.NewTicker(3 * time.Second),
-		o:     o,
-		lock:  sync.Mutex{},
-	}
-
-	rp.run()
-}
-
-func (o *LogReplayOutput) report(items []logreplay.ReportItem) {
-	if len(items) > 0 {
-		rsp := &logreplay.ReportRsp{}
-		err := o.send(logreplay.ReportURL, &logreplay.ReportData{Batch: items}, rsp)
-		if err != nil {
-			logger.Warn("[LOGREPLAY-OUTPUT] report LogReplay error: ", err)
-			return
-		}
-
-		atomic.AddUint32(&o.recordNum, uint32(rsp.Succeed))
-		logger.Info("[LOGREPLAY-OUTPUT] 上报总数: ", o.recordNum)
-		logger.Debug2("[LOGREPLAY-OUTPUT] report rsp ", rsp)
-	}
+	logreplay.NewReporter(o.counter, o.reportBuf).Run()
 }
 
 func (o *LogReplayOutput) isQPSOver() bool {
@@ -335,12 +284,11 @@ func getReqRspKey(uuid string) []byte {
 func (o *LogReplayOutput) sendMsgLogReplay(msg *Message) {
 	uuid := protocol.PayloadID(msg.Meta)
 	uuidStr := string(uuid)
+
+	logger.Debug3(fmt.Sprintf("[LOGREPLAY-OUTPUT] sendMsgLogReplay msg meta: %s, uuidStr: %s, protocol:%s",
+		byteutils.SliceToString(msg.Meta), uuidStr, msg.Protocol))
+	// 如果拦截的是res payload, 但是没有缓存req，直接返回
 	cacheReq, _ := o.cache.Get(getReqKey(uuidStr))
-
-	logger.Debug3(fmt.Sprintf("[LOGREPLAY-OUTPUT] sendMsgLogReplay msg meta: %s, uuidStr: %s",
-		byteutils.SliceToString(msg.Meta), uuidStr))
-
-	// 如果拦截的是 res payload，但是没有缓存 req，直接返回
 	if msg.Meta[0] == protocol.ResponsePayload && len(cacheReq) == 0 {
 		logger.Debug3("[LOGREPLAY-OUTPUT] sendMsgLogReplay, discard rsp uuid ", uuidStr)
 		return
@@ -348,65 +296,38 @@ func (o *LogReplayOutput) sendMsgLogReplay(msg *Message) {
 
 	// 解析 request 包
 	if msg.Meta[0] == protocol.RequestPayload {
-		headerCodec := codec.GetHeaderCodec(o.conf.Protocol)
-		if headerCodec == nil {
-			logger.Fatal("[LOGREPLAY-OUTPUT] not supported protocol: %s", o.conf.Protocol)
-		}
-
+		headerCodec := codec.GetHeaderCodec(msg.Protocol)
 		o.parseReq(msg, headerCodec, uuidStr)
+		o.setFullReqMsgCache(uuidStr, msg)
 	} else if msg.Meta[0] == protocol.ResponsePayload { // 解析 response 包
-		defer func() {
-			o.cache.Del(getReqKey(uuidStr))
-			o.cache.Del(getReqRspKey(uuidStr))
-			o.cache.Del(getReqHeaderKey(uuidStr))
-		}()
-
 		logger.Debug3("[LOGREPLAY-OUTPUT] sendMsgLogReplay, start parse rsp, uuid: ", uuidStr)
 		record, err := o.parseResponse(msg, cacheReq, uuidStr)
 		if err != nil {
 			logger.Info("[LOGREPLAY-OUTPUT] parseResponse err: ", err)
+			return
 		}
 
 		// 录制数据上报 LogReplay
 		o.sendRequest(uuidStr, record)
+		param := replayParam{
+			uuidStr: uuidStr, traceID: record.TraceID,
+		}
+		o.replayBuf <- param
 	}
 }
 
-func (o *LogReplayOutput) doReplay(msg *Message, header codec.ProtocolHeader) []byte {
-	if o.conf.Target != "" {
-		if !protocol.IsRequestPayload(msg.Meta) {
-			return nil
-		}
-
-		if o.conf.Protocol == codec.GrpcName && o.conf.GrpcReplayMethodName != "" &&
-			!strings.Contains(o.conf.GrpcReplayMethodName, header.MethodName) {
-			logger.Debug3("[LOGREPLAY-OUTPUT]  grpc protocol method not match, header method: ",
-				header.MethodName, ",config interface name: "+o.conf.GrpcReplayMethodName, ",")
-
-			return nil
-		}
-
-		// TODO tcp send repalay data
-		var err error
-		switch dispatchSendErr(err) {
-		case sendSucc:
-			atomic.AddUint32(&o.success, 1)
-		case dialError:
-			atomic.AddUint32(&o.dialFail, 1)
-		case writeError:
-			atomic.AddUint32(&o.writeFail, 1)
-		case readError:
-			atomic.AddUint32(&o.readFail, 1)
-		default:
-		}
-		if err != nil {
-			logger.Debug3("[LOGREPLAY-OUTPUT]  Request error:", err, " body: ",
-				hex.EncodeToString(msg.Data), "meta: ", string(msg.Meta))
-		}
-
+func (o *LogReplayOutput) doReplay(msg *Message, header codec.ProtocolHeader, target string) []byte {
+	if !protocol.IsRequestPayload(msg.Meta) {
 		return nil
 	}
 
+	if msg.Protocol == codec.GrpcName && o.conf.GrpcReplayMethodName != "" &&
+		!strings.Contains(o.conf.GrpcReplayMethodName, header.MethodName) {
+		logger.Debug3("[LOGREPLAY-OUTPUT]  grpc protocol method not match, header method: ",
+			header.MethodName, ",config interface name: "+o.conf.GrpcReplayMethodName, ",")
+
+		return nil
+	}
 	return nil
 }
 
@@ -438,7 +359,7 @@ func (o *LogReplayOutput) parseResponse(msg *Message, cacheReq []byte,
 			InstanceName:  o.address,
 			ServiceName:   cacheReqHeader.ServiceName,
 			APIName:       cacheReqHeader.APIName,
-			Protocol:      o.conf.Protocol,
+			Protocol:      msg.Protocol,
 			Src:           goreplay,
 			ResponseBytes: msg.Data,
 		},
@@ -448,21 +369,32 @@ func (o *LogReplayOutput) parseResponse(msg *Message, cacheReq []byte,
 	}
 
 	tag := make(map[string]interface{})
-	tag["isGoReplay"] = "true"
+	tag["isGoReplay"] = trueStr
 	tag["realServerName"] = o.conf.RealServerName
 	tag["serverAddr"] = strings.Join(config.Settings.InputRAW, ";")
 	tag["clientAddr"] = msg.SrcAddr
+	if o.conf.LogreplayTaskID != "" {
+		tag["goreplayTaskID"] = o.conf.LogreplayTaskID
+	}
+	if len(o.conf.RecordTagInfo) > 0 {
+		tags := strings.Split(o.conf.RecordTagInfo, ";")
+		for _, inputTag := range tags {
+			sp := strings.Split(inputTag, ":")
+			if len(sp) != 2 {
+				continue
+			}
+			tag[sp[0]] = sp[1]
+		}
+	}
 
-	data.RequestBytes = o.appendAfterClientPreface(cacheReq)
-	cacheReplayResponse, _ := o.cache.Get(getReqRspKey(uuidStr))
-	data.ReplayBytes = cacheReplayResponse
+	data.RequestBytes = o.appendAfterClientPreface(msg.Protocol, cacheReq)
 	data.Tag = tag
 
 	return data, nil
 }
 
-func (o *LogReplayOutput) appendAfterClientPreface(src []byte) []byte {
-	if o.conf.Protocol != codec.GrpcName {
+func (o *LogReplayOutput) appendAfterClientPreface(protocol string, src []byte) []byte {
+	if protocol != codec.GrpcName {
 		return src
 	}
 
@@ -473,7 +405,7 @@ func (o *LogReplayOutput) appendAfterClientPreface(src []byte) []byte {
 }
 
 func (o *LogReplayOutput) parseReq(msg *Message, headerCodec codec.HeaderCodec, uuidStr string) {
-	// 先解析请求头，注意这里解析的请求的 data
+	// 先解析请求头,注意这里解析的请求的 data
 	ph, err := headerCodec.Decode(msg.Data, msg.ConnectionID)
 	if err != nil {
 		logger.Error("[LOGREPLAY-OUTPUT] decode request header error: ", err)
@@ -506,24 +438,12 @@ func (o *LogReplayOutput) parseReq(msg *Message, headerCodec codec.HeaderCodec, 
 		logger.Error("[LOGREPLAY-OUTPUT] cache rea header err: ", err)
 		return
 	}
-
-	// 缓存回放响应
-	err = o.cache.Set(getReqRspKey(uuidStr), o.doReplay(msg, ph), freeCacheExpired)
-	if err != nil {
-		logger.Error("[LOGREPLAY-OUTPUT] cache replay resp err: ", err)
-	}
 }
 
 func (o *LogReplayOutput) sendRequest(uuidStr string, record *logreplay.GoReplayMessage) {
 	// 生成回放任务
 	if o.conf.Target != "" && o.taskID == 0 {
-		taskID, err := o.createTask()
-		if err != nil {
-			logger.Debug2("[LOGREPLAY-OUTPUT] sendRequest, createTask failed uuid ", uuidStr)
-			return
-		}
-
-		o.taskID = taskID
+		o.setTaskID(uuidStr)
 	}
 
 	record.TaskID = o.taskID
@@ -594,18 +514,6 @@ func (o *LogReplayOutput) Close() error {
 	return nil
 }
 
-// send 发送请求
-func (o *LogReplayOutput) send(url string, req, rsp interface{}) error {
-	err := remote.Send(url, req, rsp)
-	buf, _ := json.Marshal(req)
-	logger.Debug3(fmt.Sprintf("send %s, req: %s, rsp: %+v, error: %v", url, string(buf), rsp, err))
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
 func checkAddress(address string) {
 	host, port, err := net.SplitHostPort(address)
 	if err != nil {
@@ -617,66 +525,6 @@ func checkAddress(address string) {
 		logger.Fatal("[LOGREPLAY-OUTPUT] invalid address: ", address, err)
 		return
 	}
-}
-
-// 发送错误归类
-func dispatchSendErr(err error) SendError {
-	if err == nil {
-		return sendSucc
-	}
-
-	if isWriteError(err) {
-		return writeError
-	}
-
-	return readError
-}
-
-func isWriteError(err error) bool {
-
-	return false
-}
-
-// Reporter reports the data to logreplay
-type Reporter struct {
-	items []logreplay.ReportItem
-	timer *time.Ticker
-	o     *LogReplayOutput
-	lock  sync.Mutex
-}
-
-func (r *Reporter) run() {
-	var (
-		stop bool
-	)
-
-	for !stop {
-		select {
-		case item, isOpen := <-r.o.reportBuf:
-			if isOpen {
-				r.items = append(r.items, item)
-				if len(r.items) > 100 {
-					r.commit()
-				}
-			} else {
-				r.timer.Stop()
-				stop = true
-				r.commit()
-
-			}
-		case <-r.timer.C:
-			r.commit()
-		}
-	}
-}
-
-func (r *Reporter) commit() {
-	r.lock.Lock()
-	defer r.lock.Unlock()
-	reqs := r.items
-
-	r.o.report(reqs)
-	r.items = make([]logreplay.ReportItem, 0)
 }
 
 // getEnvInfo 获取环境名称

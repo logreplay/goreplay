@@ -1,7 +1,11 @@
 package config
 
 import (
+	"errors"
+	"fmt"
 	"net/url"
+	"regexp"
+	"strings"
 	"time"
 
 	"goreplay/size"
@@ -70,7 +74,14 @@ type LogReplayOutputConfig struct {
 	FluxSwitch string `json:"output-flux-switch"`
 	// GrpcReplayMethodName Grpc 协议边录制边回放指定的方法名称，开启边录制边回放（指定 target，并且是 grpc 协议）才会生效，（可多个值输入，英文逗号分割）
 	GrpcReplayMethodName string `json:"output-logreplay-grpc-method-name"`
-	GatewayAddr          string `json:"output-logreplay-gateway"` // goreplay 服务器端地址
+	// RecordTagInfo 录制 tag 信息
+	RecordTagInfo string `json:"output-logreplay-record-tags"`
+	// Business 业务线名称
+	Business string `json:"output-logreplay-grpc-business-name"`
+	// LogreplayTaskID goreplay进程的任务ID
+	LogreplayTaskID string            `json:"output-logreplay-task-id"`
+	RequestReWrite  RequestRewriteMap `json:"output-logreplay-request-rewrite"` // rewrite the request
+	AllowRequest    RequestRegexp     `json:"output-logreplay-allow-request"`   // filter matched request
 }
 
 // BinaryOutputConfig struct for holding binary output configuration
@@ -82,7 +93,54 @@ type BinaryOutputConfig struct {
 	TrackResponses bool          `json:"output-binary-track-response"`
 }
 
-// GatewayHost logreplay open api gateway host
-func (conf *LogReplayOutputConfig) GatewayHost() string {
-	return conf.GatewayAddr
+type requestRewrite struct {
+	Regexp *regexp.Regexp
+	Target []byte
+}
+
+// RequestRewriteMap holds regexp and data to modify request
+type RequestRewriteMap []requestRewrite
+
+// String RequestRewriteMap to string method
+func (r *RequestRewriteMap) String() string {
+	return fmt.Sprint(*r)
+}
+
+// Set method to implement flags.Value
+func (r *RequestRewriteMap) Set(value string) error {
+	pairs := strings.Split(value, ",") // multiple pairs in value are seperated by comma
+	for _, pair := range pairs {
+		pairArr := strings.SplitN(pair, ":", 2) // pair is in format source:target
+		if len(pairArr) < 2 {
+			return errors.New("need both src and target, colon-delimited (ex. /a:/b)")
+		}
+		regularExp, err := regexp.Compile(pairArr[0])
+		if err != nil {
+			return err
+		}
+		*r = append(*r, requestRewrite{Regexp: regularExp, Target: []byte(pairArr[1])})
+	}
+	return nil
+}
+
+type httpRegexp struct {
+	Regexp *regexp.Regexp
+}
+
+// RequestRegexp a slice of regexp to match request
+type RequestRegexp []httpRegexp
+
+// String RequestRegexp to string method
+func (r *RequestRegexp) String() string {
+	return fmt.Sprint(*r)
+}
+
+// Set method to implement flags.Value
+func (r *RequestRegexp) Set(value string) error {
+	regularExp, err := regexp.Compile(value)
+	if err != nil {
+		return err
+	}
+	*r = append(*r, httpRegexp{Regexp: regularExp})
+	return nil
 }

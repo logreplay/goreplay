@@ -4,20 +4,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
-	"sync"
 	"testing"
-	"time"
+
+	"goreplay/config"
+	"goreplay/logreplay"
 
 	"github.com/agiledragon/gomonkey/v2"
 	"github.com/coocood/freecache"
-	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/suite"
-
-	"goreplay/client"
-	"goreplay/codec"
-	"goreplay/codec/mocks"
-	"goreplay/config"
-	"goreplay/logreplay"
 )
 
 const localhostGateway = "127.0.0.1:80"
@@ -70,7 +64,6 @@ func (s *logreplaySuite) TestPluginRead() {
 				Protocol:            "gofree",
 				TrackResponses:      true,
 				Target:              "127.0.0.1:8000",
-				GatewayAddr:         localhostGateway,
 				ProtocolServiceName: "svc1",
 			})
 
@@ -154,7 +147,6 @@ func (s *logreplaySuite) TestPluginWrite() {
 				APPKey:              "1",
 				Protocol:            "grpc",
 				TrackResponses:      true,
-				GatewayAddr:         localhostGateway,
 				ProtocolServiceName: "svc1",
 			})
 
@@ -181,7 +173,6 @@ func (s *logreplaySuite) TestCheckOption() {
 				Env:                 config.EnvTest,
 				Timeout:             -1,
 				Target:              "127.0.0.1:8080",
-				GatewayAddr:         localhostGateway,
 				ProtocolServiceName: "svc1",
 			},
 			errorSign: false,
@@ -195,83 +186,6 @@ func (s *logreplaySuite) TestCheckOption() {
 		})
 	}
 
-}
-
-func (s *logreplaySuite) TestParseReq() {
-	decodeMock := mocks.HeaderCodec{}
-	for _, tt := range []struct {
-		name     string
-		protocol string
-		mock     func() *gomonkey.Patches
-	}{
-		{
-			name: "success",
-			mock: func() *gomonkey.Patches {
-				return gomonkey.
-					ApplyMethod(reflect.TypeOf(&freecache.Cache{}), "Set",
-						func(*freecache.Cache, []byte, []byte, int) error { return nil }).
-					ApplyMethod(reflect.TypeOf(&client.TCPClient{}), "Send",
-						func(*client.TCPClient, []byte) ([]byte, error) { return []byte("1"), nil })
-			},
-			protocol: "1",
-		},
-		{
-			name: "grpc protocol match err",
-			mock: func() *gomonkey.Patches {
-				decodeMock.On("Decode", mock.Anything, mock.Anything).Return(codec.ProtocolHeader{MethodName: "1"}, nil)
-				return gomonkey.
-					ApplyMethod(reflect.TypeOf(&freecache.Cache{}), "Set",
-						func(*freecache.Cache, []byte, []byte, int) error { return nil }).
-					ApplyMethod(reflect.TypeOf(&client.TCPClient{}), "Send",
-						func(*client.TCPClient, []byte) ([]byte, error) { return []byte("1"), nil })
-			},
-			protocol: codec.GrpcName,
-		},
-		{
-			name: "qps over",
-			mock: func() *gomonkey.Patches {
-				return gomonkey.ApplyPrivateMethod(reflect.TypeOf(&LogReplayOutput{}), "isQPSOver",
-					func(*LogReplayOutput, *config.LogReplayOutputConfig) bool { return true })
-			},
-			protocol: "1",
-		},
-		{
-			name: "reqKey error",
-			mock: func() *gomonkey.Patches {
-				return gomonkey.
-					ApplyMethod(reflect.TypeOf(&freecache.Cache{}), "Set",
-						func(*freecache.Cache, []byte, []byte, int) error { return s.fakeErr }).
-					ApplyMethod(reflect.TypeOf(&client.TCPClient{}), "Send",
-						func(*client.TCPClient, []byte) ([]byte, error) { return []byte("1"), nil })
-			},
-			protocol: "1",
-		},
-	} {
-		s.Run(tt.name, func() {
-			decodeMock.On("Decode", mock.Anything, mock.Anything).Return(codec.ProtocolHeader{}, nil)
-			patches := tt.mock()
-			patches.
-				ApplyPrivateMethod(reflect.TypeOf(&LogReplayOutput{}), "checkModuleAuth",
-					func(*LogReplayOutput, *config.LogReplayOutputConfig) {})
-			defer patches.Reset()
-
-			output := NewLogReplayOutput("", &config.LogReplayOutputConfig{
-				ModuleID:             "1",
-				APPKey:               "1",
-				APPID:                "1",
-				Protocol:             tt.protocol,
-				CommitID:             "1",
-				QPSLimit:             100,
-				Target:               "127.0.0.1:8080",
-				GrpcReplayMethodName: "2",
-				GatewayAddr:          localhostGateway,
-				ProtocolServiceName:  "svc1",
-			})
-			output.(*LogReplayOutput).parseReq(&Message{
-				Meta: []byte("1\n"),
-			}, codec.GetHeaderCodec("1"), "")
-		})
-	}
 }
 
 func (s *logreplaySuite) TestParseResponse() {
@@ -302,71 +216,12 @@ func (s *logreplaySuite) TestParseResponse() {
 				APPID:               "1",
 				Protocol:            "grpc",
 				CommitID:            "1",
-				GatewayAddr:         localhostGateway,
 				ProtocolServiceName: "svc1",
 			})
 
 			_, err := output.(*LogReplayOutput).parseResponse(&Message{}, []byte("a"), "")
 			s.Equal(tt.error, err)
 			_ = output.(*LogReplayOutput).Close()
-		})
-	}
-}
-
-func (s *logreplaySuite) TestCheckModuleAuth() {
-	for _, tt := range []struct {
-		name string
-		conf *config.LogReplayOutputConfig
-		mock func() *gomonkey.Patches
-	}{
-		{
-			name: "success",
-			conf: &config.LogReplayOutputConfig{},
-			mock: func() *gomonkey.Patches {
-				return gomonkey.ApplyPrivateMethod(reflect.TypeOf(&LogReplayOutput{}), "send",
-					func(*LogReplayOutput, string, interface{}, interface{}) error { return nil })
-			},
-		},
-	} {
-		s.Run(tt.name, func() {
-			patches := tt.mock()
-			if patches != nil {
-				defer patches.Reset()
-			}
-			output := &LogReplayOutput{}
-
-			output.checkModuleAuth(tt.conf)
-		})
-	}
-}
-
-func (s logreplaySuite) TestCommit() {
-	for _, tt := range []struct {
-		name string
-		mock func() *gomonkey.Patches
-	}{
-		{
-			name: "success",
-			mock: func() *gomonkey.Patches {
-				return gomonkey.ApplyPrivateMethod(reflect.TypeOf(&LogReplayOutput{}), "report",
-					func(*LogReplayOutput, []logreplay.ReportItem) {})
-			},
-		},
-	} {
-		s.Run(tt.name, func() {
-			patches := tt.mock()
-			if patches != nil {
-				defer patches.Reset()
-			}
-			rp := &Reporter{
-				items: []logreplay.ReportItem{},
-				timer: time.NewTicker(3 * time.Second),
-				o: &LogReplayOutput{
-					reportBuf: make(chan logreplay.ReportItem),
-				},
-				lock: sync.Mutex{},
-			}
-			rp.commit()
 		})
 	}
 }

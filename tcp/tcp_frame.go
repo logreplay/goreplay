@@ -79,7 +79,7 @@ func (c *CommonFramer) IsStart(pckt *Packet) bool {
 	// need get peer last ack, so the key should be peer's key
 	key := c.MessageKey(pckt, true)
 	in, out := c.InOut(pckt)
-
+	logger.Debug3("ListenAddr: ", c.ListenAddr, "dst: ", pckt.Dst(), "src: ", pckt.Src())
 	return IsStart(pckt, key.String(), in, out)
 }
 

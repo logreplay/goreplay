@@ -35,6 +35,9 @@ type Settings struct {
 
 	InputUDP       config.MultiOption `json:"input-udp"`
 	InputUDPConfig config.UDPInputConfig
+
+	InputKafkaConfig config.InputKafkaConfig
+	KafkaTLSConfig   config.KafkaTLSConfig
 }
 
 // Message represents data accross plugins
@@ -43,6 +46,7 @@ type Message struct {
 	Data         []byte // actual data
 	ConnectionID string
 	SrcAddr      string // 记录来源的IP地址, 在包为response包的时候赋值, value为DstAddr
+	Protocol     string
 }
 
 // PluginReader is an interface for input plugins
@@ -143,6 +147,8 @@ func InitPluginSettings() Settings {
 		ModifierConfig:        config.Settings.ModifierConfig,
 		InputUDP:              config.Settings.InputUDP,
 		InputUDPConfig:        config.Settings.InputUDPConfig,
+		InputKafkaConfig:      config.Settings.InputKafkaConfig,
+		KafkaTLSConfig:        config.Settings.KafkaTLSConfig,
 	}
 
 	return pluginSettings
@@ -193,6 +199,10 @@ func NewPlugins(settings Settings) *InOutPlugins {
 		plugins.registerPlugin(NewUDPInput, options, settings.InputUDPConfig)
 	}
 
+	if settings.InputKafkaConfig.Host != "" && settings.InputKafkaConfig.Topic != "" {
+		plugins.registerPlugin(NewKafkaInput, "", &settings.InputKafkaConfig, &settings.KafkaTLSConfig)
+	}
+
 	return plugins
 }
 
@@ -208,6 +218,9 @@ func checkOriginalHost(settings *Settings) {
 // getInputProtocol get input protocol
 func getInputProtocol(settings Settings) string {
 	if settings.Logreplay {
+		if settings.InputKafkaConfig.Host != "" {
+			return "kafka"
+		}
 		return settings.RAWInputConfig.Protocol
 	}
 

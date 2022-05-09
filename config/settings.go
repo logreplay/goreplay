@@ -85,8 +85,10 @@ type AppSettings struct {
 
 	ModifierConfig HTTPModifierConfig
 
-	InputUDP       MultiOption `json:"input-udp"`
-	InputUDPConfig UDPInputConfig
+	InputUDP         MultiOption `json:"input-udp"`
+	InputUDPConfig   UDPInputConfig
+	InputKafkaConfig InputKafkaConfig
+	KafkaTLSConfig   KafkaTLSConfig
 }
 
 // Settings holds Gor configuration
@@ -243,6 +245,10 @@ func setRawInputFlags() {
 		"Intercept traffic using `libpcap` (default), `raw_socket` or `pcap_file`")
 	flag.StringVar(&Settings.Protocol, "input-raw-protocol", "",
 		"Specify application protocol of intercepted traffic. ")
+	flag.StringVar(&Settings.RecordMsgType, "input-raw-record-msg-type", "",
+		"Record message type: req or rsp")
+	flag.StringVar(&Settings.RecordMsgCmd, "input-raw-record-msg-cmd", "",
+		"Record message cmd")
 	flag.StringVar(&Settings.RealIPHeader, "input-raw-realip-header", "",
 		"If not blank, injects header with given name and real IP value to the request payload. "+
 			"Usually this header should be named: X-Real-IP")
@@ -283,6 +289,17 @@ func setRawInputFlags() {
 		"# Redirect all incoming requests to staging.com address \n\t"+
 		"gor --input-raw :80 --output-http http://staging.com")
 	flag.StringVar(&Settings.SelectHost, "input-raw-select-host", "", "select the traffic of the specified host.\n\t")
+	flag.StringVar(&Settings.AspectInfo, "input-raw-aspect-info", "", "the traffic of aspect\n\t")
+	flag.StringVar(&Settings.InputKafkaConfig.Host, "input-kafka-host", "",
+		"Send request and response stats to Kafka:\n\t"+
+			"gor --output-stdout --input-kafka-host '192.168.0.1:9092,192.168.0.2:9092'")
+	flag.StringVar(&Settings.InputKafkaConfig.Topic, "input-kafka-topic", "",
+		"Send request and response stats to Kafka:"+
+			"\n\tgor --output-stdout --input-kafka-topic 'kafka-log'")
+	flag.BoolVar(&Settings.InputKafkaConfig.UseJSON, "input-kafka-json-format",
+		false, "If turned on, it will assume that messages "+
+			"coming in JSON format rather than  GoReplay text format.")
+
 }
 
 func setOutputHTTPConfig() {
@@ -354,6 +371,12 @@ func setOutputLogReplayConfig() {
 	flag.StringVar(&Settings.OutputLogReplayConfig.RealServerName,
 		"output-logreplay-real-service-name", "",
 		"对应服务地址 为空亦可")
+	flag.StringVar(&Settings.OutputLogReplayConfig.RecordTagInfo,
+		"output-logreplay-record-tags", "",
+		"录制流量tag信息，标记流量")
+	flag.StringVar(&Settings.OutputLogReplayConfig.LogreplayTaskID,
+		"output-logreplay-task-id", "",
+		"录制任务ID")
 	flag.IntVar(&Settings.OutputLogReplayConfig.QPSLimit, "output-logreplay-qps-limit", QPSLimit,
 		"LogReplay qps limit, default value is 10, max value is 100")
 	flag.StringVar(&Settings.OutputLogReplayConfig.Env, "output-logreplay-env", EnvFormal,
@@ -362,8 +385,12 @@ func setOutputLogReplayConfig() {
 		"flux switch")
 	flag.StringVar(&Settings.OutputLogReplayConfig.GrpcReplayMethodName,
 		"output-logreplay-grpc-method-name", "", "grpc 边录制边回放指定的回放的方法名称，为空则不做拦截")
-	flag.StringVar(&Settings.OutputLogReplayConfig.GatewayAddr, "output-logreplay-gateway", "",
-		"gateway host for goreplay, mandatory")
+	flag.StringVar(&Settings.OutputLogReplayConfig.Business,
+		"output-logreplay-grpc-business-name", "", "使用goreplay业务名称，属于业务定制逻辑，不清楚的不需要填写")
+	flag.Var(&Settings.OutputLogReplayConfig.RequestReWrite, "output-logreplay-request-rewrite",
+		"Rewrite the request based on a source:target mapping. For example: /v1/user/([^\\/]+)/ping:/v2/user/$1/ping")
+	flag.Var(&Settings.OutputLogReplayConfig.AllowRequest, "output-logreplay-allow-request",
+		"Filter matched request with the regexp. Anything else will be dropped")
 }
 
 func setOutputBinaryConfig() {

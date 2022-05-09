@@ -17,11 +17,12 @@ type HeaderCodec interface {
 
 // ProtocolHeader 解析返回的头部信息
 type ProtocolHeader struct {
-	ServiceName   string // 服务名
-	APIName       string // 获取接口名
-	MethodName    string // 方法名
-	InterfaceName string // 接口名
-	CusTraceID    string // 用户自定义traceID
+	ServiceName   string            // 服务名
+	APIName       string            // 获取接口名
+	MethodName    string            // 方法名
+	InterfaceName string            // 接口名
+	CusTraceID    string            // 用户自定义traceID
+	Properties    map[string]string // 业务自定义属性
 }
 
 // HeaderCodecBuilder HeaderCodec的建造者

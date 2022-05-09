@@ -17,11 +17,11 @@ var (
 )
 
 const (
-	// LogReplayTraceID logreplay的traceID
+	// LogReplayTraceID logreplay 的 traceID
 	LogReplayTraceID = "_log_replay_trace_id"
 )
 
-// HTTP2Framer 自定义Http2Framer
+// HTTP2Framer 自定义 Http2Framer
 type HTTP2Framer struct {
 	*http2.Framer
 	payload   []byte
@@ -45,7 +45,7 @@ func NewHTTP2Framer(payload []byte, cacheKey string, useNewDecoder bool) *HTTP2F
 
 	cacheDecoder, ok := cache.Get(cacheKey)
 	if ok {
-		// cache中存的对象必定是*hpack.Decoder
+		// cache 中存的对象必定是*hpack.Decoder
 		fr.ReadMetaHeaders, _ = cacheDecoder.(*hpack.Decoder)
 	} else {
 		decoder := hpack.NewDecoder(http2InitHeaderTableSize, nil)
@@ -56,7 +56,7 @@ func NewHTTP2Framer(payload []byte, cacheKey string, useNewDecoder bool) *HTTP2F
 	return &HTTP2Framer{Framer: fr, payload: payload}
 }
 
-// ReadFrameAndBytes 读取一个frame, 包括它的原始二进制数据
+// ReadFrameAndBytes 读取一个 frame, 包括它的原始二进制数据
 func (fr *HTTP2Framer) ReadFrameAndBytes() ([]byte, http2.Frame, error) {
 	f, err := fr.ReadFrame()
 	if err != nil {
@@ -73,7 +73,7 @@ func (fr *HTTP2Framer) ReadFrameAndBytes() ([]byte, http2.Frame, error) {
 	return pl, f, nil
 }
 
-// ReEncodeMetaHeadersFrame 重新encode http2的headers
+// ReEncodeMetaHeadersFrame 重新 encode http2 的 headers
 func ReEncodeMetaHeadersFrame(header *http2.MetaHeadersFrame) ([]byte, error) {
 	var buf bytes.Buffer
 	enc := hpack.NewEncoder(&buf)
