@@ -1,0 +1,5 @@
+test_tool:  "tapgo"
+test_arg:  "-p=1"
+test_arg:  "-gcflags=all=-l"
+test_arg: "-run=^TestUnit.*$"
+coverage_arg:  {}

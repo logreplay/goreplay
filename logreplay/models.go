@@ -8,6 +8,12 @@ type ReportData struct {
 // ReportDataType 上报数据类型定义
 type ReportDataType string
 
+// BaseResp 基本响应结构体
+type BaseResp struct {
+	Code int    `json:"code"`
+	Msg  string `json:"msg"`
+}
+
 // 上报数据类型常量
 const (
 	TypeAspect   ReportDataType = "aspect"
@@ -45,6 +51,7 @@ type GoReplayReq struct {
 	Addrs          string `json:"addrs"`
 	ReplayType     uint32 `json:"replay_type"`
 	TargetModuleID string `json:"target_module_id"`
+	ReplayEnvTag   bool   `json:"replay_env_tag"`
 }
 
 // AuthRsp 授权
@@ -90,4 +97,41 @@ type ReportGoreplayStatusReq struct {
 type ReportGoreplayStatusRsp struct {
 	BaseRsp        *BaseRsp `json:"base_rsp"`
 	GoreplayStatus string   `json:"goreplayStatus"`
+}
+
+// GetGoReplayTaskStatusReq 查询任务状态req
+type GetGoReplayTaskStatusReq struct {
+	TaskID string `json:"task_id"`
+}
+
+// GetGoReplayTaskStatusRsp 查询任务状态rsp
+type GetGoReplayTaskStatusRsp struct {
+	BaseRsp *BaseRsp `json:"base_rsp"`
+	Status  int64    `json:"status"`
+}
+
+// UpdateGoReplayTaskRecordNumReq 更新录制数量req
+type UpdateGoReplayTaskRecordNumReq struct {
+	TaskID    string `json:"task_id"`
+	RecordNum int32  `json:"record_num"`
+}
+
+// UpdateGoReplayTaskRecordNumRsp 更新录制数量rsp
+type UpdateGoReplayTaskRecordNumRsp struct {
+	BaseRsp   *BaseRsp `json:"base_rsp"`
+	IsSuccess bool     `json:"is_success"`
+}
+
+// KafkaConsumerReq request
+type KafkaConsumerReq struct {
+	Broker    string
+	Topic     string
+	Offset    int64
+	Partition int32
+}
+
+// ReportResp 上报的响应结构体
+type ReportResp struct {
+	BaseResp BaseResp `json:"base_resp"`
+	Succeed  int      `json:"succeed"`
 }

@@ -103,7 +103,9 @@ func (e *Emitter) copyMulty(src plugins.PluginReader, writers ...plugins.PluginW
 	for {
 		msg, err := src.PluginRead()
 		if err != nil {
-			if err == errors.ErrorFilterFromIP {
+			if err == errors.ErrorFilterFromIP ||
+				err == errors.ErrorFilterCmd ||
+				err == errors.ErrorFilterMsgType {
 				continue
 			}
 

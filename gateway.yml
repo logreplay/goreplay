@@ -1,0 +1,5 @@
+host: ${host}
+report_url: ${report_url}
+go_replay_task_url: ${go_replay_task_url}
+get_go_replay_task_status: ${get_go_replay_task_status}
+update_go_replay_task_record_num: ${update_go_replay_task_record_num}

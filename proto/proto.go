@@ -494,7 +494,6 @@ func HasFullPayload(data []byte, f Feedback) bool {
 	var body []byte
 	feed, ok = generateFeedback(data, f)
 	if !ok {
-		logger.Warn("generateFeedback failed.")
 		return false
 	}
 
@@ -524,7 +523,7 @@ func generateFeedback(data []byte, f Feedback) (*feedback, bool) {
 		feed, ok = f.Feedback().(*feedback)
 	}
 
-	if !ok {
+	if !ok || feed == nil {
 		feed = new(feedback)
 	}
 

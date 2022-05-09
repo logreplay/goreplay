@@ -2,6 +2,7 @@ package tcp
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net"
 	"time"
@@ -54,20 +55,14 @@ func (pckt *Packet) Copy() *Packet {
 }
 
 // ParsePacket parse raw packets
-func (pool *MessagePool) ParsePacket(packet gopacket.Packet) (pckt *Packet, err error) {
+func (p *MessagePool) ParsePacket(packet gopacket.Packet) (*Packet, error) {
 	// early check of error
 	if packet == nil {
-		return
+		return nil, errors.New("ignore nil packet")
 	}
-	defer func() {
-		if packet.ErrorLayer() != nil {
-			err = packet.ErrorLayer().Error()
-			return
-		}
-	}()
 
 	// initialization
-	pckt = new(Packet)
+	pckt := new(Packet)
 	pckt.Timestamp = packet.Metadata().Timestamp
 	if pckt.Timestamp.IsZero() {
 		pckt.Timestamp = time.Now()
@@ -91,7 +86,7 @@ func (pool *MessagePool) ParsePacket(packet gopacket.Packet) (pckt *Packet, err 
 		pckt.Length = net6.Length
 	} else {
 		pckt = nil
-		return
+		return nil, errors.New("not IPv4 or IPv6")
 	}
 
 	// parsing tcp header(transportation layer)
@@ -99,7 +94,7 @@ func (pool *MessagePool) ParsePacket(packet gopacket.Packet) (pckt *Packet, err 
 		pckt.TCP = tcp
 	} else {
 		pckt = nil
-		return
+		return nil, errors.New("not transportLayer")
 	}
 
 	pckt.DataOffset *= 4
@@ -112,7 +107,11 @@ func (pool *MessagePool) ParsePacket(packet gopacket.Packet) (pckt *Packet, err 
 
 	pckt.Lost = pckt.Length - uint16(headerSize+len(pckt.Payload))
 
-	return
+	if packet.ErrorLayer() != nil {
+		return nil, packet.ErrorLayer().Error()
+	}
+
+	return pckt, nil
 }
 
 // Src returns the source socket of a packet

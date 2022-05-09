@@ -4,11 +4,8 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
 	"flag"
 	"fmt"
-	"io/ioutil"
 	"net/http"
 	"net/http/httputil"
 	"os"
@@ -17,17 +14,15 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/shirou/gopsutil/process"
-
 	"goreplay/config"
 	"goreplay/emitter"
 	"goreplay/logger"
-	"goreplay/logreplay"
 	"goreplay/plugins"
-	"goreplay/remote"
 
+	"github.com/shirou/gopsutil/process"
+
+	_ "embed"
 	_ "go.uber.org/automaxprocs"
-
 	_ "goreplay/tcp/protocol"
 )
 
@@ -36,6 +31,16 @@ const (
 	psName             = "goreplay" // 设置 goReplay 的进程名
 	goreplayServerName = "goreplay_server"
 )
+
+//go:embed gateway.yml
+var yamlConfig []byte
+
+func init() {
+	if err := config.SetUp(yamlConfig); err != nil {
+		logger.Fatal(err)
+	}
+	logger.Info(fmt.Sprintf("%+v", config.GWCfg()))
+}
 
 func main() {
 	args := os.Args[1:]
@@ -72,13 +77,6 @@ func main() {
 	if len(inOutPlugins.Inputs) == 0 || len(inOutPlugins.Outputs) == 0 {
 		logger.Fatal("Required at least 1 input and 1 output")
 	}
-
-	// 流量转用例上报模型 ID
-	fluxReport(&config.Settings.OutputLogReplayConfig)
-
-	// 上报心跳
-	go reportHeartBeat()
-
 	closeCh := make(chan int)
 	emitterSettings := emitter.Settings{
 		PrettifyHTTP:   config.Settings.PrettifyHTTP,
@@ -87,7 +85,6 @@ func main() {
 		ModifierConfig: config.Settings.ModifierConfig,
 	}
 	emitter := emitter.NewEmitter(emitterSettings)
-
 	go emitter.Start(inOutPlugins, config.Settings.Middleware)
 	goExitAfter(closeCh)
 
@@ -111,7 +108,11 @@ func main() {
 
 // goExitAfter 预处理 exit_after 时间到之后的退出逻辑。
 func goExitAfter(closeCh chan int) {
-	// exit_after == -1：表示外部没有进行设置，应该初始化成默认值。
+	// exit_after == 0, 表示不需要时间限制，一直录制
+	if config.Settings.ExitAfter == 0 {
+		return
+	}
+	// exit_after == -1：表示外部没有进行设置,应该初始化成默认值。
 	if config.Settings.ExitAfter == -1 {
 		// 设置默认时间为 60min。
 		config.Settings.ExitAfter = 6 * time.Hour
@@ -162,62 +163,6 @@ func limitProcess() {
 				continue
 			}
 			logger.Fatal(fmt.Errorf("process %s exists, pid=%d", psName, p.Pid))
-		}
-	}
-}
-
-// fluxReport 流量转用例通过网关上报，上报失败不影响录制流程
-func fluxReport(conf *config.LogReplayOutputConfig) {
-	logger.Debug("current flux switch status: " + conf.FluxSwitch)
-	if conf.FluxSwitch == config.FluxSwitchDefault {
-		return
-	}
-
-	data := map[string]string{"module_id": conf.ModuleID}
-	err := post(fmt.Sprintf("http://%s/flux2case/caseProcessor/SaveModuleID", conf.GatewayHost()), data)
-	if err != nil {
-		logger.Error(err)
-	}
-}
-
-// post 发送 post 请求
-func post(url string, data interface{}) error {
-	client := &http.Client{Timeout: 5 * time.Second}
-	jsonStr, _ := json.Marshal(data)
-	resp, err := client.Post(url, "application/json", bytes.NewBuffer(jsonStr))
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	result, _ := ioutil.ReadAll(resp.Body)
-	logger.Debug(resp.Status + string(result))
-
-	return nil
-}
-
-// reportHeartBeat 上报心跳
-func reportHeartBeat() {
-	logger.Debug("report heartbeat...")
-	ipAndPort := config.Settings.InputRAW[0]
-	req := &logreplay.ReportGoreplayStatusReq{
-		IPAndPort: ipAndPort,
-	}
-	rsp := &logreplay.ReportGoreplayStatusRsp{}
-
-	// 调用 goreplay_server 上报心跳
-	err := remote.Send(logreplay.ReportGoreplayStatusURL, req, rsp)
-	if err != nil {
-		logger.Error(err)
-	}
-
-	// 定时上报
-	ticker := time.NewTicker(10 * time.Second)
-	defer ticker.Stop()
-	for range ticker.C {
-		err := remote.Send(logreplay.ReportGoreplayStatusURL, req, rsp)
-		if err != nil {
-			logger.Error(err)
 		}
 	}
 }
