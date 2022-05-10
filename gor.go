@@ -28,8 +28,8 @@ import (
 
 // 常量
 const (
-	psName             = "goreplay" // 设置 goReplay 的进程名
-	goreplayServerName = "goreplay_server"
+	psName             = "goreplay"        // 设置 goReplay 的进程名
+	goreplayServerName = "goreplay_server" // server后台服务
 )
 
 //go:embed gateway.yml
