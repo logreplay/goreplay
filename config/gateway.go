@@ -13,7 +13,7 @@ type GWConfig struct {
 	UpdateGoReplayTaskRecordNum string `yaml:"update_go_replay_task_record_num"`
 }
 
-var cfg *GWConfig
+var cfg *GWConfig = &GWConfig{}
 
 // SetUp 初始化
 func SetUp(yamlConfig []byte) error {

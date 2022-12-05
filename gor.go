@@ -56,6 +56,7 @@ func main() {
 		logger.Fatal(http.ListenAndServe(args[1], loggingMiddleware(http.FileServer(http.Dir(dir)))))
 	} else {
 		flag.Parse()
+		setupYamlConf() // it must be after flag.Parse(), coz it may be overwritten by flags
 		if config.Settings.LogPath != "" {
 			logger.Info("log output path: ", config.Settings.LogPath)
 		}
@@ -66,8 +67,6 @@ func main() {
 
 		inOutPlugins = plugins.NewPlugins(plugins.InitPluginSettings())
 	}
-
-	setupYamlConf() // it must be after flag.Parse(), coz it may be overwritten by flags
 
 	logger.Info(fmt.Sprintf("[PPID %d and PID %d] Version:%s", os.Getppid(), os.Getpid(), config.VERSION))
 
