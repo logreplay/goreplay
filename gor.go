@@ -35,11 +35,11 @@ const (
 //go:embed gateway.yml
 var yamlConfig []byte
 
-func init() {
+func setupYamlConf() {
 	if err := config.SetUp(yamlConfig); err != nil {
 		logger.Fatal(err)
 	}
-	logger.Info(fmt.Sprintf("%+v", config.GWCfg()))
+	logger.Info(fmt.Sprintf("gw config: %+v", config.GWCfg()))
 }
 
 func main() {
@@ -66,6 +66,8 @@ func main() {
 
 		inOutPlugins = plugins.NewPlugins(plugins.InitPluginSettings())
 	}
+
+	setupYamlConf() // it must be after flag.Parse(), coz it may be overwritten by flags
 
 	logger.Info(fmt.Sprintf("[PPID %d and PID %d] Version:%s", os.Getppid(), os.Getpid(), config.VERSION))
 
