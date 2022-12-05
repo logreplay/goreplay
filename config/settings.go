@@ -391,6 +391,11 @@ func setOutputLogReplayConfig() {
 		"Rewrite the request based on a source:target mapping. For example: /v1/user/([^\\/]+)/ping:/v2/user/$1/ping")
 	flag.Var(&Settings.OutputLogReplayConfig.AllowRequest, "output-logreplay-allow-request",
 		"Filter matched request with the regexp. Anything else will be dropped")
+	flag.StringVar(&Settings.OutputLogReplayConfig.GatewayAddr, "output-logreplay-gateway", "","gateway address")
+	flag.StringVar(&Settings.OutputLogReplayConfig.ReportURLPath, "output-logreplay-report-url", "",
+		"report url path for captured traffic")
+	flag.StringVar(&Settings.OutputLogReplayConfig.HeartbeatURLPath, "output-logreplay-heartbeat-url", "",
+		"heartbeat url path")
 }
 
 func setOutputBinaryConfig() {

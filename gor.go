@@ -35,11 +35,11 @@ const (
 //go:embed gateway.yml
 var yamlConfig []byte
 
-func init() {
+func setupYamlConf() {
 	if err := config.SetUp(yamlConfig); err != nil {
 		logger.Fatal(err)
 	}
-	logger.Info(fmt.Sprintf("%+v", config.GWCfg()))
+	logger.Info(fmt.Sprintf("gw config: %+v", config.GWCfg()))
 }
 
 func main() {
@@ -56,6 +56,7 @@ func main() {
 		logger.Fatal(http.ListenAndServe(args[1], loggingMiddleware(http.FileServer(http.Dir(dir)))))
 	} else {
 		flag.Parse()
+		setupYamlConf() // it must be after flag.Parse(), coz it may be overwritten by flags
 		if config.Settings.LogPath != "" {
 			logger.Info("log output path: ", config.Settings.LogPath)
 		}

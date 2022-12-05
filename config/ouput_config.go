@@ -82,6 +82,9 @@ type LogReplayOutputConfig struct {
 	LogreplayTaskID string            `json:"output-logreplay-task-id"`
 	RequestReWrite  RequestRewriteMap `json:"output-logreplay-request-rewrite"` // rewrite the request
 	AllowRequest    RequestRegexp     `json:"output-logreplay-allow-request"`   // filter matched request
+	GatewayAddr  string `json:"output-logreplay-gateway"` // report addr, e.g ip:port
+	ReportURLPath string `json:"output-logreplay-report-url"` // report url path
+	HeartbeatURLPath string `json:"output-logreplay-heartbeat-url"` // heartbeat url path
 }
 
 // BinaryOutputConfig struct for holding binary output configuration

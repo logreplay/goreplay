@@ -13,12 +13,10 @@ import (
 
 const schema = "http"
 
-// http client
-var cli = resty.New().
-	SetHeader("Rewrite-Request", "true")
-
 // Send 发送请求
 func Send(url string, req, rsp interface{}) error {
+	var cli = resty.New().
+		SetHeader("Rewrite-Request", "true")
 	post, err := cli.
 		SetBaseURL(fmt.Sprintf("%s://%s", schema, config.GWCfg().Host)).
 		SetHeader("AppId", config.Settings.OutputLogReplayConfig.APPID).
