@@ -34,12 +34,16 @@ func (h *HeartBeatReporter) DoReport() {
 	}
 
 	// 定时上报
+	errCnt := 0
 	ticker := time.NewTicker(10 * time.Second)
 	defer ticker.Stop()
 	for range ticker.C {
 		err := gateway.Send(config.GWCfg().GetGoReplayTaskStatus, req, rsp)
 		if err != nil {
-			logger.Error(err)
+			if errCnt%10 == 0 {
+				logger.Error(err)
+			}
+			errCnt++
 		}
 		if rsp.Status == TaskStatusStop {
 			logger.Fatal("goreplay process stoped")

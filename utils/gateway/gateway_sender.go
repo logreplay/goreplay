@@ -22,6 +22,10 @@ func Send(url string, req, rsp interface{}) error {
 		SetHeader("AppId", config.Settings.OutputLogReplayConfig.APPID).
 		SetHeader("AppKey", config.Settings.OutputLogReplayConfig.APPKey).
 		R().SetBody(req).SetResult(rsp).Post(url)
+	// return err
+	if err != nil {
+		return fmt.Errorf("remote error: %v, rsp: %s", err, post)
+	}
 	// resp is nil
 	if post == nil {
 		return fmt.Errorf("%s: rsp is nil", url)
@@ -29,10 +33,6 @@ func Send(url string, req, rsp interface{}) error {
 	// request fail
 	if post.StatusCode() != http.StatusOK {
 		logger.Error(fmt.Sprintf("url: %s, httpStatus: %d, req: %v", url, post.StatusCode(), req))
-	}
-	// return err
-	if err != nil {
-		return fmt.Errorf("remote error: %v, rsp: %s", err, post)
 	}
 	return nil
 }

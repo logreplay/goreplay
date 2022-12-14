@@ -77,7 +77,11 @@ func (r *Reporter) report(items []ReportItem) {
 			return
 		}
 
-		logger.Info("[LOGREPLAY-OUTPUT] 上报总数: ", r.counter.IncrRecordNum(uint32(rsp.Succeed)))
+		if rsp.BaseResp.Code != HttpRspSuccCode {
+			logger.Error("[LOGREPLAY-OUTPUT] report failed, errCode:%d, errMsg:%s", rsp.BaseResp.Code, rsp.BaseResp.Msg)
+		} 
+
+		logger.Info("[LOGREPLAY-OUTPUT] total number of reported records: ", r.counter.IncrRecordNum(uint32(rsp.Succeed)))
 		logger.Debug2("[LOGREPLAY-OUTPUT] report rsp succeed: ", rsp.Succeed)
 	}
 }
